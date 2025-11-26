@@ -12,7 +12,7 @@ import numpy as np
 import random
 
 # my root folder: change at will
-root = "3_assign/downloaded_data_small/small-20bn-jester-v1"
+root = "data/videos/small-20bn-jester-v1"
 
 # Shadowy image (mean pixel value across Time dimension)
 class JesterMeanBaselineDataset(Dataset):
@@ -124,7 +124,6 @@ def show_random_baseline_image(dataset):
 # loading and testing script
 use_small_train = True
 
-personal_path = "/vol/home/s4316061/CV_assignments/3_assign/"
 if use_small_train:
     train_path_of_choice = "jester-v1-small-train.csv"
     data_download_path = 'downloaded_data_small/small-20bn-jester-v1/'
@@ -133,7 +132,7 @@ else:
     data_download_path = 'something_else_entirely'
 
 # should be the same for all of us
-valid_path = "jester-v1-validation.csv"
+valid_path = "data/labels/jester-v1-validation.csv"
 
 transform = transforms.Compose([
     transforms.Resize((100, 150)),
@@ -142,7 +141,7 @@ transform = transforms.Compose([
 
 baseline_data_train = JesterMeanBaselineDataset(
     data_root=root,
-    annotation_file=personal_path + train_path_of_choice,
+    annotation_file=train_path_of_choice,
     transform=transform
 )
 
@@ -150,7 +149,7 @@ label_map = baseline_data_train.class_to_idx
 
 baseline_data_valid = JesterMeanBaselineDataset(
     data_root=root,
-    annotation_file=personal_path + valid_path,
+    annotation_file=valid_path,
     transform=transform,
     text_label_dict=label_map
 )
