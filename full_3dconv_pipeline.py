@@ -21,7 +21,7 @@ import random
 
 # optional (I just like the summary output; install if you want with either pip or conda the package "torchsummary")
 from torchsummary import summary
-from zmq.backend import first
+# from zmq.backend import first
 
 
 # ----------------------------
@@ -53,7 +53,7 @@ g.manual_seed(master_seed)
 # ----------------------------
 
 # Change this string to match the profile key below
-CURRENT_USER = "NICO"  # Options: "ALEX", "NICO"
+CURRENT_USER = "ALEX"  # Options: "ALEX", "NICO"
 USE_SMALL_DATA = True
 
 # Defining profiles
@@ -130,13 +130,17 @@ def get_project_paths(user_profile, use_small=True):
 # -----------------------------
 
 class Jester3DConvDataset(Dataset):
-    def __init__(self, data_root, annotation_file, transform=None,
+    def __init__(self, data_root, annotation_file, transform,
                  text_label_dict=None, trim_percent=0.3, cache_dir=None, 
-                 num_target_frames = 20, frame_skips=1, diff_type=False):
+                 num_target_frames = 20, frame_skips=1, debug=False):
         """
         Args:
+            debug (bool): is used to help debug image shape problems, i.e. how many frames
+                          are left after trimming and frame skipping.
+            transform (Pytorch.transform.Compose): Must be present, every instantiation
+                            requires a transform object that MUST include ToTensor().
             cache_dir (str): Path to a folder where .pt files will be saved.
-                             If None, caching is disabled.
+                             If None, caching is disabled (not recommended).
         """
         self.cache_dir = cache_dir
 
@@ -151,14 +155,7 @@ class Jester3DConvDataset(Dataset):
         
         self.num_target_frames = num_target_frames # Adds padding or removes frames to always have the same number of frames
         self.frame_skips = frame_skips
-        # diff_type Decides the type of diff to use on the frames: 
-        # None does nothing
-        # 'first' subtracts the first frame from all other frames
-        # 'prev' subtracts the previous frame from each frame. I found this one to work best empirically
-        self.diff_type = diff_type 
-        # keep mostly relevant frames from the image, as usually the first trim_percent frames is the
-        # subject starring at the camera, motionless, and so are the last trim_percent frames, making
-        # the output image noisy, or motionless
+        self.debug = debug
 
         # load CSV data
         df = pd.read_csv(annotation_file, sep=';', header=None, names=['video_id', 'label'])
@@ -185,103 +182,92 @@ class Jester3DConvDataset(Dataset):
         video_id = self.video_ids[idx]
         label = self.labels[idx]
 
+        # CACHE PATH: if caching is on, check if we already did the work for this video: saves us A LOT of compute
+        if self.cache_dir:
+            cache_path = os.path.join(self.cache_dir, f"{video_id}.pt")
+            if os.path.exists(cache_path):
+                # FAST PATH: Load tensor directly
+                video_tensor = torch.load(cache_path)
+                return video_tensor, label
+        
+        # SLOW PATH: Calculate from scratch
         video_dir = os.path.join(self.data_root, video_id)
 
         try:
             frame_names = sorted([x for x in os.listdir(video_dir) if x.endswith('.jpg')])
             # debugging: seeing how many frames there are at the beginning
-            # print(f"Video {video_id}: First={frame_names[0]}, Last={frame_names[-1]}")
+            if self.debug:
+                print(f"Raw Frames: {len(frame_names)}")
+                print(f"First: {frame_names[0]} | Last: {frame_names[-1]}")
+            
         except FileNotFoundError:
             print("missed some image")
+            # I'll keep this 'wrong' format, as I want the process to crash if it reaches this: it should not be able to reach this
             return torch.zeros(1), label
-
-        # If we are using the diff method, pop the first frame to later subtract it from every other image
-        # We do this before trimming to make sure that the person hadn't already started performing the gestuer in this frame
-        first_img = None
-        if self.diff_type == "first":
-            first_frame_name = frame_names.pop()
-            img_path = os.path.join(video_dir, first_frame_name)
-
-            with Image.open(img_path) as first_img:
-                first_img = first_img.convert("RGB")
-
-            # Resize/ToTensor happen here
-            if self.transform:
-                first_img = self.transform(first_img)
-
-        num_frames = len(frame_names)
 
         # Image trimming
         # calculate how many frames to drop from each side
-        cut_amount = int(num_frames * self.trim_percent)
+        total_frames = len(frame_names)
+        cut_amount = int(total_frames * self.trim_percent)
         # it keeps everything if cut is 0.0 (means there aren't enough images to cut trim_percent*2 from)
         if cut_amount > 0:
             # revert to keeping only the middle frame if we cut too much (trim_percent >= 0.5)
-            if (num_frames - (2 * cut_amount)) <= 0:
-                mid = num_frames // 2
+            if (total_frames - (2 * cut_amount)) <= 0:
+                mid = total_frames // 2
                 frame_names = [frame_names[mid]]
             else:
                 # trim it up
                 frame_names = frame_names[cut_amount : -cut_amount]
 
-        prev_img = None
-        if self.diff_type == "prev":
-            prev_frame_name = frame_names.pop()
-            img_path = os.path.join(video_dir, prev_frame_name)
-
-            with Image.open(img_path) as prev_img:
-                prev_img = prev_img.convert("RGB")
-
-            # Resize/ToTensor happen here
-            if self.transform:
-                prev_img = self.transform(prev_img)
-
-        # self.frames_available = len(frame_names)
+        self.frames_available = len(frame_names)
         # debugging: seeing how many images are left, from how many there were (previous print)
-        # print(f"Video {video_id}: First={frame_names[0]}, Last={frame_names[-1]}")
+        if self.debug:
+            print(f"Trimmed Frames (Trim %: {self.trim_percent}): {len(frame_names)}")
+            print(f"New First: {frame_names[0]} | New Last: {frame_names[-1]} \n")
+            print(f"Will be brought down to {self.num_target_frames}")
 
-        # Loading and Transforming the remaining frames
+        # Difference logic
+        first_img_path = os.path.join(video_dir, frame_names[0])  # reference frame: first frame of the trimmed batch
+        ref_tensor = self.transform(Image.open(first_img_path).convert("RGB"))  # one liner to transform the PIL image 
+        # object, and close the file too (what "with open" did)
         tensors = []
+    
+        # Iterate through frames
         for i in range(0, len(frame_names), self.frame_skips):
-            frame_name = frame_names[i]
-            img_path = os.path.join(video_dir, frame_name)
+            img_path = os.path.join(video_dir, frame_names[i])
+            
+            curr_tensor = self.transform(Image.open(img_path).convert("RGB"))
+    
+            # CALCULATE DIFF: |Current - Reference|
+            # This works because we enforced that transform returns a Tensor
+            diff_tensor = torch.abs(curr_tensor - ref_tensor)
+            tensors.append(diff_tensor)
 
-            with Image.open(img_path) as img:
-                img = img.convert("RGB")
-
-            # Resize/ToTensor happen here
-            if self.transform:
-                img = self.transform(img)
-
-            if self.diff_type == "first":
-                img_added = abs(img - first_img)
-            elif self.diff_type == "prev":
-                img_added = abs(img - prev_img)
-                prev_img = img
-            else:
-                img_added = img
-
-            tensors.append(img_added)
 
         # stack all frames. so  shape (num_frames, 3, H, W)
         stacked_video = torch.stack(tensors)
-        
+
+        # 3D FORMATTING (pad or crop)
         # Pad or trim to a fixed number of frames (16 frames for consistency)
         num_frames = stacked_video.shape[0]
         
         if num_frames < self.num_target_frames:
-            # Pad with zeros if we have fewer frames
+            # Pad with zeros (black frames) at the end
             padding = torch.zeros(self.num_target_frames - num_frames, *stacked_video.shape[1:])
             stacked_video = torch.cat([stacked_video, padding], dim=0)
         elif num_frames > self.num_target_frames:
-            # Randomly sample frames if we have more (or just take first 16)
+            # Sample evenly to fit target
             indices = torch.linspace(0, num_frames - 1, self.num_target_frames).long()
             stacked_video = stacked_video[indices]
-        
-        # Permute to (C, D, H, W) format: (num_frames, 3, H, W) -> (3, num_frames, H, W)
-        # This is a lazy fix, because the model expects the dimensions in a different order
+            
+        # standard format is (Channels, Depth, Height, Width) -> (C, D, H, W)
+        # current is (D, C, H, W) to make a batch of shape (num_frames, channels, height, width), e.g. (16, 3, 100, 150)
         stacked_video = stacked_video.permute(1, 0, 2, 3)
 
+        # CACHE SAVE: saving the result so we never have to calculate it again
+        if self.cache_dir:
+            torch.save(stacked_video, cache_path)  # saves a .pt file, which is much fater for torch to load in the CACHE PATH
+        
         return stacked_video, label
 
 
@@ -347,31 +333,56 @@ def check_data_availability(csv_path, video_root_path):
 
 # -----------------------------------------
 
-def show_random_baseline_video(dataset):
+def show_video_grid(dataset, idx=None):
     """
-    Picks a random sample from the dataset, converts the tensor back to a
-    viewable image, and displays it with its label.
+    Visualizes a 3D video tensor as a grid of frames.
+    Handles (C, D, H, W) format -> (D, H, W, C) for plotting.
     """
-    idx = random.randint(0, len(dataset) - 1)
-
+    # sample an image
+    if idx is None:
+        idx = random.randint(0, len(dataset) - 1)
+    
+    # Load tensor (of shape: C, D, H, W) and Label
     video_tensor, label_idx = dataset[idx]
-    # Permute the video tensor back to its original shape (num_frames, 3, H, W)
-    video_tensor = video_tensor.permute(1, 0, 2, 3)
-    for i, img_tensor in enumerate(video_tensor):
-        # Matplotlib expects images in format (Height, Width, Channels)
-        # so we permute dimensions: (3, H, W) -> (H, W, 3)
-        img_view = img_tensor.permute(1, 2, 0).numpy()
+    
+    # label from the dataset
+    class_to_idx = dataset.class_to_idx
+    idx_to_class = {v: k for k, v in class_to_idx.items()}
+    label_text = idx_to_class.get(label_idx, "Unknown")
+    
+    print(f"Viewing Video ID: {dataset.video_ids[idx]}")
+    print(f"Label: {label_text} ({label_idx})")
+    print(f"Tensor Shape: {video_tensor.shape}") # expected (3, 18, H, W)
 
-        # We invert the class_to_idx dictionary to get the text back
-        class_to_idx = dataset.class_to_idx
-        idx_to_class = {v: k for k, v in class_to_idx.items()}
-        label_text = idx_to_class.get(label_idx, "Unknown")
+    # permuting for Matplotlib
+    # Start: (C, D, H, W) -> Goal: (D, H, W, C) <=> PyTorch: (0, 1, 2, 3) -> (1, 2, 3, 0)
+    video_tensor = video_tensor.permute(1, 2, 3, 0)
+    
+    # convert to Numpy and Clip
+    images = video_tensor.numpy()
+    images = np.clip(images, 0, 1) # we clip them to [0, 1] to avoid weird matplotlib artifacts.
 
-        plt.figure(figsize=(4, 4))
-        plt.imshow(img_view)
-        plt.title(f"Label: {label_text} (ID: {label_idx})\n'Frame {i}")
-        plt.axis('off')
-        plt.show()
+    # make the Grid Size
+    num_frames = images.shape[0]
+    cols = 4
+    rows = math.ceil(num_frames / cols)
+
+    # plot
+    fig, axes = plt.subplots(rows, cols, figsize=(12, 8))
+    fig.suptitle(f"Label: {label_text}", fontsize=16)
+
+    for i in range(rows * cols):
+        ax = axes.flat[i]
+        if i < num_frames:
+            ax.imshow(images[i])
+            ax.set_title(f"Frame {i}")
+            ax.axis('off')
+        else:
+            # hide empty subplots if frames < grid spots
+            ax.axis('off')
+            
+    plt.tight_layout()
+    plt.show()
 
 # -------------------------------------------------
 
@@ -642,29 +653,29 @@ if __name__ == "__main__":
 
 
     trim_percent = 0.2  # found empirically to yield the best outputs (clearest shadows and images)
-    num_target_frames = 14
-    frame_skips = 2
-    diff_type = "prev"
+    num_target_frames = 18
+    frame_skips = 1
 
     transform = transforms.Compose([
         transforms.Resize((100, 150)),
         transforms.ToTensor()
     ])
 
-    baseline_data_train = Jester3DConvDataset(
+    train_3d_data = Jester3DConvDataset(
         data_root=video_root,
         annotation_file=train_annotation,
         transform=transform,
         trim_percent=trim_percent,
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
-        diff_type=diff_type
+        cache_dir=diff_cache_root,
+        debug=False
     )
 
     # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    label_map = baseline_data_train.class_to_idx
+    label_map = train_3d_data.class_to_idx
 
-    baseline_data_valid = Jester3DConvDataset(
+    valid_3d_data = Jester3DConvDataset(
         data_root=video_root,
         annotation_file=val_annotation,
         transform=transform,
@@ -673,7 +684,8 @@ if __name__ == "__main__":
         trim_percent=trim_percent,
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
-        diff_type=diff_type
+        cache_dir=diff_cache_root,
+        debug=False
     )
 
 
@@ -681,42 +693,48 @@ if __name__ == "__main__":
     check_data_availability(train_annotation, video_root)
 
     # This line is for debugging, to check if the video frames make sense
-    # show_random_baseline_video(baseline_data_valid)
+    # show_video_grid(train_3d_data)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
 
     model = Resnet3DConvModel([2,2,2,2], 2, img_channels=3, num_classes=27).to(device) # [3,4,6,3] is the number of Res-blocks of ResNet50
 
-    summary(model, input_size=(3, 16, 100, 150))
+    summary(model, input_size=(3, num_target_frames, 100, 150))
 
     batch_size = 64
     print(device)
     if device == "cpu":
         num_workers = min(12, os.cpu_count() or 2)  # dynamic core loading; swap the hard limit (12) depending on the amount of ram available (<16)
+        persistent = False # standard logic for cpu
     else:
-        num_workers = 2 # I have this temporarily I will just set it to 4 for me
+        num_workers = 6 # I have this temporarily I will just set it to 4 for me
+        persistent = True
     # some computers can handle 12 core usage, but (with the assumption that we're calculating for video processing) we might run into OOM
     # "Out of Memory" errors on the RAM side, not the VRAM side. Note that this is foe Data Loading only! inspect machine_limit.py file for more info
     epochs = 30
 
     train_loader = DataLoader(
-        baseline_data_train,
+        train_3d_data,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         worker_init_fn=worker_init_fn,
         generator=g,
-        pin_memory=False,
+        persistent_workers=persistent, # keep workers alive between epochs
+        prefetch_factor=2 if num_workers > 0 else None,  # forcong workers to buffer 2 batches ahead (workers gotta work harder)
+        pin_memory=True
     )
 
     val_loader = DataLoader(
-        baseline_data_valid,
+        valid_3d_data,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         worker_init_fn=worker_init_fn,
-        pin_memory=False
+        persistent_workers=persistent, 
+        prefetch_factor=2 if num_workers > 0 else None,
+        pin_memory=True
     )
 
     train_losses, test_accuracies = train_model(
