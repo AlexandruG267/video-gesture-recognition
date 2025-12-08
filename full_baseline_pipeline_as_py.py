@@ -65,6 +65,7 @@ PROFILES = {
         # Empty string means "directly in root", so like: "CV_assignments/3_assign/jester-v1-validation.csv" for me
         "video_dir": "downloaded_data_small",
         "cached_images": "downloaded_data_small",
+        "checkpoints_dir": "checkpoints"
         # I added this later, to make the training process faster (it is the folder I use to save the mean images,
         # so the script does not calculate the mean every time it wants to load it to the model)
     },
@@ -73,7 +74,8 @@ PROFILES = {
         # Relative path likely works best, you used just "data/" in the shared file, so if it doesn't work, please change as needed
         "csv_dir": "labels",  # so like: "data/labels", where labels is a directory
         "video_dir": "videos",
-        "cached_images": "cache"
+        "cached_images": "cache",
+        "checkpoints_dir": "checkpoints"
         # change carefully: it needs to be in the same parent directory as your directory for the small dataset, and have
         # "cached_images" as the name. It HAS to match perfectly, otherwise the training will not work
     }
@@ -121,7 +123,9 @@ def get_project_paths(user_profile, use_small=True):
     # Relative Diff Cache Path: .../downloaded_data_small/rel_diff_cache_images
     rel_diff_cache_path = root / config["cached_images"] / rel_diff_cache_folder_name
 
-    return train_csv_path, val_csv_path, video_root_path, mean_cache_path, diff_cache_path, rel_diff_cache_path
+    checkpoint_path = config["checkpoints_dir"]
+
+    return train_csv_path, val_csv_path, video_root_path, mean_cache_path, diff_cache_path, rel_diff_cache_path, checkpoint_path
 
 
 # -----------------------------
@@ -729,7 +733,12 @@ class TinyVGG(nn.Module):
 
 # ----------------------------------
 
-
+def load_model(checkpoint_path, model, optimizer, scheduler, scaler):
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    scheduler.load_state_dict(checkpoint["scheduler"])
+    scaler.load_state_dict(checkpoint["scaler"])
 
 # ------------------------------------
 
@@ -758,7 +767,7 @@ def calculate_test_accuracy(model, loader, device):
     return accuracy.item()
 
 
-def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.001):
+def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.001, checkpoint_interval=3, load_from=None):
     model = model.to(device)
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
@@ -769,6 +778,10 @@ def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.00
 
     # use torch.amp for mixed precision training
     scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+
+    if load_from: # If load from is not None, load the model from a checkpoint in order to keep training from there
+        print(f"Loading model from {load_from}")
+        load_model(load_from, model, optimizer, scheduler, scaler)
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -814,13 +827,25 @@ def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.00
 
         print(f"Epoch {epoch:02d}: Train loss: {avg_train_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
 
+        if checkpoint_interval: # Only make checkpoints is checkpoint_interval is not 0
+            if epoch % checkpoint_interval == 0:
+                checkpoint_path = f"{checkpoint_root}/baseline/checkpoint_{type(train_loader.dataset).__name__}_{epoch}_{val_accuracy*100}%"
+                print(f"Creating checkpoint: {checkpoint_path}")
+                checkpoint = {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'scaler': scaler.state_dict()
+                }
+                torch.save(checkpoint, checkpoint_path)
+
     return train_losses, val_accuracies
 
 # ------------------------------------------------
 
 if __name__ == "__main__":
     # to be ran once for the whole project
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root = get_project_paths(
+    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = get_project_paths(
         CURRENT_USER, USE_SMALL_DATA)
 
     # DEBUG CHECK
@@ -833,9 +858,9 @@ if __name__ == "__main__":
         f"Exists?     {train_annotation.exists()} (CSV), {video_root.exists()} (Video Dir), {mean_cache_root.exists()} (mean_cached Dir)")
     # .exists is a Pathlib method
 
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root = str(
+    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = str(
         train_annotation), str(val_annotation), str(video_root), str(mean_cache_root), str(diff_cache_root), str(
-        rel_diff_cache_root)
+        rel_diff_cache_root), str(checkpoint_root)
 
 
     trim_percent = 0.3  # found empirically to yield the best outputs (clearest shadows and images)
@@ -931,7 +956,10 @@ if __name__ == "__main__":
         num_workers = 2 # I have this temporarily I will just set it to 4 for me
     # some computers can handle 12 core usage, but (with the assumption that we're calculating for video processing) we might run into OOM
     # "Out of Memory" errors on the RAM side, not the VRAM side. Note that this is foe Data Loading only! inspect machine_limit.py file for more info
-    epochs = 20
+    epochs = 21
+
+    # load_from = f"{checkpoint_root}/baseline/checkpoint_DataLoader_2"
+    load_from = None
 
     train_loader = DataLoader(
         baseline_data_train,
@@ -952,14 +980,15 @@ if __name__ == "__main__":
         pin_memory=False
     )
 
-
     train_losses, test_accuracies = train_model(
         model=model,
         train_loader=train_loader,
         test_loader=val_loader,
         device=device,
         num_epochs=epochs,
-        lr=0.001
+        lr=0.001,
+        checkpoint_interval=3,
+        load_from=load_from
     )
 
     print(f"Finished with \nTrain_losses: {train_losses} \nTest_accuracies: {test_accuracies}")
