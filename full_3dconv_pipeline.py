@@ -111,7 +111,7 @@ def get_project_paths(user_profile, use_small=True):
 
     val_csv_name = "jester-v1-validation.csv"
 
-    mean_cache_folder_name = "mean_cached_images"
+    mean_cache_folder_name = "normal_cached_images"
     diff_cache_folder_name = "diff_cached_images"
     rel_diff_cache_folder_name = "rel_diff_cached_images"
 
@@ -280,9 +280,6 @@ class Jester3DConvDataset(Dataset):
             print(f"New First: {frame_names[0]} | New Last: {frame_names[-1]} \n")
             print(f"Will be brought down to {self.num_target_frames}")
 
-        # Difference logic
-        first_img_path = os.path.join(video_dir, frame_names[0])  # reference frame: first frame of the trimmed batch
-        ref_tensor = self.transform(Image.open(first_img_path).convert("RGB"))  # one liner to transform the PIL image 
         # object, and close the file too (what "with open" did)
         tensors = []
     
@@ -291,7 +288,6 @@ class Jester3DConvDataset(Dataset):
             frame_name = frame_names[i]
             img_path = os.path.join(video_dir, frame_name)
             with Image.open(img_path) as img:
-
                 img = img.convert("RGB")
 
             # Resize/ToTensor happen here
@@ -307,7 +303,7 @@ class Jester3DConvDataset(Dataset):
             else:
                 img_added = img
 
-        tensors.append(img_added)
+            tensors.append(img_added)
 
         # stack all frames. so  shape (num_frames, 3, H, W)
         stacked_video = torch.stack(tensors)
@@ -745,14 +741,15 @@ if __name__ == "__main__":
     trim_percent = 0.2  # found empirically to yield the best outputs (clearest shadows and images)
     num_target_frames = 18
     frame_skips = 1
-    diff_type = "none"
+    diff_type = "prev"
+    debug = True
     
     match diff_type:
         case "none":
             cache_dir = normal_cache_root
-        case "diff":
+        case "first":
             cache_dir = diff_cache_root
-        case "rel":
+        case "prev":
             cache_dir = rel_diff_cache_root
 
     transform = transforms.Compose([
@@ -769,7 +766,7 @@ if __name__ == "__main__":
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
         cache_dir=cache_dir,
-        debug=False
+        debug=debug
     )
 
     # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
@@ -786,7 +783,7 @@ if __name__ == "__main__":
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
         cache_dir=cache_dir,
-        debug=False
+        debug=debug
     )
 
 
@@ -794,7 +791,7 @@ if __name__ == "__main__":
     check_data_availability(train_annotation, video_root)
 
     # This line is for debugging, to check if the video frames make sense
-    # show_video_grid(train_3d_data)
+    show_video_grid(train_3d_data)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(device)
@@ -841,15 +838,15 @@ if __name__ == "__main__":
         pin_memory=True
     )
 
-    train_losses, test_accuracies = train_model(
-        model=model,
-        train_loader=train_loader,
-        test_loader=val_loader,
-        device=device,
-        num_epochs=epochs,
-        lr=0.001,
-        checkpoint_interval=3,
-        load_from=load_from
-    )
+    # train_losses, test_accuracies = train_model(
+    #     model=model,
+    #     train_loader=train_loader,
+    #     test_loader=val_loader,
+    #     device=device,
+    #     num_epochs=epochs,
+    #     lr=0.001,
+    #     checkpoint_interval=3,
+    #     load_from=load_from
+    # )
 
-    print(f"Finished with \nTrain_losses: {train_losses} \nTest_accuracies: {test_accuracies}")
+    # print(f"Finished with \nTrain_losses: {train_losses} \nTest_accuracies: {test_accuracies}")
