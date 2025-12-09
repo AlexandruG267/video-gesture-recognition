@@ -21,7 +21,8 @@ import random
 
 # optional (I just like the summary output; install if you want with either pip or conda the package "torchsummary")
 from torchsummary import summary
-# from zmq.backend import first
+
+import math
 
 
 # ----------------------------
@@ -53,7 +54,7 @@ g.manual_seed(master_seed)
 # ----------------------------
 
 # Change this string to match the profile key below
-CURRENT_USER = "ALEX"  # Options: "ALEX", "NICO"
+CURRENT_USER = "NICO"  # Options: "ALEX", "NICO"
 USE_SMALL_DATA = True
 
 # Defining profiles
@@ -61,6 +62,8 @@ USE_SMALL_DATA = True
 # 'root': The base folder for the project
 # 'csv_dir': Where CSVs live (relative to root)
 # 'video_dir': Where the video folders live (relative to root)
+
+# PATH GENERATOR FUNCTION (for all the future instances where we need Paths)
 PROFILES = {
     "ALEX": {
         "root": Path("/vol/home/s4316061/CV_assignments/3_assign"),  # common path, from system root, to project folder
@@ -68,6 +71,7 @@ PROFILES = {
         # Empty string means "directly in root", so like: "CV_assignments/3_assign/jester-v1-validation.csv" for me
         "video_dir": "downloaded_data_small",
         "cached_images": "downloaded_data_small",
+        "checkpoints_dir": "checkpoints"
         # I added this later, to make the training process faster (it is the folder I use to save the mean images,
         # so the script does not calculate the mean every time it wants to load it to the model)
     },
@@ -76,7 +80,8 @@ PROFILES = {
         # Relative path likely works best, you used just "data/" in the shared file, so if it doesn't work, please change as needed
         "csv_dir": "labels",  # so like: "data/labels", where labels is a directory
         "video_dir": "videos",
-        "cached_images": "cache"
+        "cached_images": "cache_3dconv",
+        "checkpoints_dir": "checkpoints"
         # change carefully: it needs to be in the same parent directory as your directory for the small dataset, and have
         # "cached_images" as the name. It HAS to match perfectly, otherwise the training will not work
     }
@@ -124,13 +129,15 @@ def get_project_paths(user_profile, use_small=True):
     # Relative Diff Cache Path: .../downloaded_data_small/rel_diff_cache_images
     rel_diff_cache_path = root / config["cached_images"] / rel_diff_cache_folder_name
 
-    return train_csv_path, val_csv_path, video_root_path, mean_cache_path, diff_cache_path, rel_diff_cache_path
+    checkpoint_path = config["checkpoints_dir"]
+
+    return train_csv_path, val_csv_path, video_root_path, mean_cache_path, diff_cache_path, rel_diff_cache_path, checkpoint_path
 
 
 # -----------------------------
 
 class Jester3DConvDataset(Dataset):
-    def __init__(self, data_root, annotation_file, transform,
+    def __init__(self, data_root, annotation_file, transform, diff_type,
                  text_label_dict=None, trim_percent=0.3, cache_dir=None, 
                  num_target_frames = 20, frame_skips=1, debug=False):
         """
@@ -155,6 +162,16 @@ class Jester3DConvDataset(Dataset):
         
         self.num_target_frames = num_target_frames # Adds padding or removes frames to always have the same number of frames
         self.frame_skips = frame_skips
+
+        # diff_type Decides the type of diff to use on the frames:
+        # 'none' does nothing
+        # 'first' subtracts the first frame from all other frames
+        # 'prev' subtracts the previous frame from each frame. I found this one to work best empirically
+        self.diff_type = diff_type
+        # keep mostly relevant frames from the image, as usually the first trim_percent frames is the
+        # subject starring at the camera, motionless, and so are the last trim_percent frames, making
+        # the output image noisy, or motionless
+
         self.debug = debug
 
         # load CSV data
@@ -205,6 +222,29 @@ class Jester3DConvDataset(Dataset):
             # I'll keep this 'wrong' format, as I want the process to crash if it reaches this: it should not be able to reach this
             return torch.zeros(1), label
 
+        # If we are using the diff method, pop the first frame to later subtract it from every other image
+
+        # We do this before trimming to make sure that the person hadn't already started performing the gestuer in this frame
+
+        first_img = None
+
+        if self.diff_type == "first":
+
+            first_frame_name = frame_names.pop()
+
+            img_path = os.path.join(video_dir, first_frame_name)
+
+            with Image.open(img_path) as first_img:
+
+                first_img = first_img.convert("RGB")
+
+            # Resize/ToTensor happen here
+
+            if self.transform:
+                first_img = self.transform(first_img)
+
+        num_frames = len(frame_names)
+
         # Image trimming
         # calculate how many frames to drop from each side
         total_frames = len(frame_names)
@@ -218,6 +258,20 @@ class Jester3DConvDataset(Dataset):
             else:
                 # trim it up
                 frame_names = frame_names[cut_amount : -cut_amount]
+
+        prev_img = None
+
+        if self.diff_type == "prev":
+            prev_frame_name = frame_names.pop()
+            img_path = os.path.join(video_dir, prev_frame_name)
+            with Image.open(img_path) as prev_img:
+                prev_img = prev_img.convert("RGB")
+
+            # Resize/ToTensor happen here
+            if self.transform:
+                prev_img = self.transform(prev_img)
+
+        # self.frames_available = len(frame_names)
 
         self.frames_available = len(frame_names)
         # debugging: seeing how many images are left, from how many there were (previous print)
@@ -234,15 +288,26 @@ class Jester3DConvDataset(Dataset):
     
         # Iterate through frames
         for i in range(0, len(frame_names), self.frame_skips):
-            img_path = os.path.join(video_dir, frame_names[i])
-            
-            curr_tensor = self.transform(Image.open(img_path).convert("RGB"))
-    
-            # CALCULATE DIFF: |Current - Reference|
-            # This works because we enforced that transform returns a Tensor
-            diff_tensor = torch.abs(curr_tensor - ref_tensor)
-            tensors.append(diff_tensor)
+            frame_name = frame_names[i]
+            img_path = os.path.join(video_dir, frame_name)
+            with Image.open(img_path) as img:
 
+                img = img.convert("RGB")
+
+            # Resize/ToTensor happen here
+
+            if self.transform:
+                img = self.transform(img)
+
+            if self.diff_type == "first":
+                img_added = abs(img - first_img)
+            elif self.diff_type == "prev":
+                img_added = abs(img - prev_img)
+                prev_img = img
+            else:
+                img_added = img
+
+        tensors.append(img_added)
 
         # stack all frames. so  shape (num_frames, 3, H, W)
         stacked_video = torch.stack(tensors)
@@ -547,6 +612,15 @@ class Resnet3DConvModel(nn.Module):
 
 # ------------------------------------
 
+def load_model(checkpoint_path, model, optimizer, scheduler, scaler):
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    scheduler.load_state_dict(checkpoint["scheduler"])
+    scaler.load_state_dict(checkpoint["scaler"])
+
+# ------------------------------------
+
 def calculate_test_accuracy(model, loader, device):
     model.eval()
     correct = 0
@@ -572,7 +646,7 @@ def calculate_test_accuracy(model, loader, device):
     return accuracy.item()
 
 
-def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.001):
+def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.001, checkpoint_interval=3, load_from=None):
     model = model.to(device)
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
@@ -583,6 +657,10 @@ def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.00
 
     # use torch.amp for mixed precision training
     scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+
+    if load_from: # If load from is not None, load the model from a checkpoint in order to keep training from there
+        print(f"Loading model from {load_from}")
+        load_model(load_from, model, optimizer, scheduler, scaler)
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -628,13 +706,25 @@ def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.00
 
         print(f"Epoch {epoch:02d}: Train loss: {avg_train_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
 
+        if checkpoint_interval: # Only make checkpoints is checkpoint_interval is not 0
+            if epoch % checkpoint_interval == 0:
+                checkpoint_path = f"{checkpoint_root}/3dconv/checkpoint_{type(train_loader.dataset).__name__}_{epoch}_{val_accuracy*100}%"
+                print(f"Creating checkpoint: {checkpoint_path}")
+                checkpoint = {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'scaler': scaler.state_dict()
+                }
+                torch.save(checkpoint, checkpoint_path)
+
     return train_losses, val_accuracies
 
 # ------------------------------------------------
 
 if __name__ == "__main__":
     # to be ran once for the whole project
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root = get_project_paths(
+    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = get_project_paths(
         CURRENT_USER, USE_SMALL_DATA)
 
     # DEBUG CHECK
@@ -647,14 +737,15 @@ if __name__ == "__main__":
         f"Exists?     {train_annotation.exists()} (CSV), {video_root.exists()} (Video Dir), {mean_cache_root.exists()} (mean_cached Dir)")
     # .exists is a Pathlib method
 
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root = str(
+    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = str(
         train_annotation), str(val_annotation), str(video_root), str(mean_cache_root), str(diff_cache_root), str(
-        rel_diff_cache_root)
+        rel_diff_cache_root), str(checkpoint_root)
 
 
     trim_percent = 0.2  # found empirically to yield the best outputs (clearest shadows and images)
     num_target_frames = 18
     frame_skips = 1
+    diff_type = "none"
 
     transform = transforms.Compose([
         transforms.Resize((100, 150)),
@@ -665,6 +756,7 @@ if __name__ == "__main__":
         data_root=video_root,
         annotation_file=train_annotation,
         transform=transform,
+        diff_type=diff_type,
         trim_percent=trim_percent,
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
@@ -679,6 +771,7 @@ if __name__ == "__main__":
         data_root=video_root,
         annotation_file=val_annotation,
         transform=transform,
+        diff_type=diff_type,
         text_label_dict=label_map,
         # so the Validation loader does not generate new ones and turn everything on its head
         trim_percent=trim_percent,
@@ -714,6 +807,9 @@ if __name__ == "__main__":
     # "Out of Memory" errors on the RAM side, not the VRAM side. Note that this is foe Data Loading only! inspect machine_limit.py file for more info
     epochs = 30
 
+    # load_from = f"{checkpoint_root}/baseline/checkpoint_DataLoader_2"
+    load_from = None
+
     train_loader = DataLoader(
         train_3d_data,
         batch_size=batch_size,
@@ -743,7 +839,9 @@ if __name__ == "__main__":
         test_loader=val_loader,
         device=device,
         num_epochs=epochs,
-        lr=0.001
+        lr=0.001,
+        checkpoint_interval=3,
+        load_from=load_from
     )
 
     print(f"Finished with \nTrain_losses: {train_losses} \nTest_accuracies: {test_accuracies}")
