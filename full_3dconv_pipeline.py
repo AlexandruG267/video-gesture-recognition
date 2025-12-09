@@ -724,21 +724,21 @@ def train_model(model, train_loader, test_loader, device, num_epochs=20, lr=0.00
 
 if __name__ == "__main__":
     # to be ran once for the whole project
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = get_project_paths(
+    train_annotation, val_annotation, video_root, normal_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = get_project_paths(
         CURRENT_USER, USE_SMALL_DATA)
 
     # DEBUG CHECK
     print(f"User: {CURRENT_USER}")
     print(f"Train CSV:  {train_annotation}")
     print(f"Video Root: {video_root}")
-    print(f"Mean cache Root: {mean_cache_root}")
+    print(f"Mean cache Root: {normal_cache_root}")
     print(f"Diff cache Root: {diff_cache_root}")
     print(
-        f"Exists?     {train_annotation.exists()} (CSV), {video_root.exists()} (Video Dir), {mean_cache_root.exists()} (mean_cached Dir)")
+        f"Exists?     {train_annotation.exists()} (CSV), {video_root.exists()} (Video Dir), {normal_cache_root.exists()} (mean_cached Dir)")
     # .exists is a Pathlib method
 
-    train_annotation, val_annotation, video_root, mean_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = str(
-        train_annotation), str(val_annotation), str(video_root), str(mean_cache_root), str(diff_cache_root), str(
+    train_annotation, val_annotation, video_root, normal_cache_root, diff_cache_root, rel_diff_cache_root, checkpoint_root = str(
+        train_annotation), str(val_annotation), str(video_root), str(normal_cache_root), str(diff_cache_root), str(
         rel_diff_cache_root), str(checkpoint_root)
 
 
@@ -746,6 +746,14 @@ if __name__ == "__main__":
     num_target_frames = 18
     frame_skips = 1
     diff_type = "none"
+    
+    match diff_type:
+        case "none":
+            cache_dir = normal_cache_root
+        case "diff":
+            cache_dir = diff_cache_root
+        case "rel":
+            cache_dir = rel_diff_cache_root
 
     transform = transforms.Compose([
         transforms.Resize((100, 150)),
@@ -760,7 +768,7 @@ if __name__ == "__main__":
         trim_percent=trim_percent,
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
-        cache_dir=diff_cache_root,
+        cache_dir=cache_dir,
         debug=False
     )
 
@@ -777,7 +785,7 @@ if __name__ == "__main__":
         trim_percent=trim_percent,
         num_target_frames=num_target_frames,
         frame_skips=frame_skips,
-        cache_dir=diff_cache_root,
+        cache_dir=cache_dir,
         debug=False
     )
 
