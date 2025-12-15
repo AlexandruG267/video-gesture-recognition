@@ -22,6 +22,9 @@ import random
 # optional (I just like the summary output; install if you want with either pip or conda the package "torchsummary")
 from torchsummary import summary
 
+# Imports for confusion matrix
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 # setting seed for reproducibility
 def set_seed(seed):
@@ -678,7 +681,69 @@ def train_model(model, train_loader, test_loader, device, save_path, num_epochs=
             
     return train_losses, val_accuracies
 
+# -----------------------------------------------
+
+def load_model(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None):
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model"])
+    if optimizer: optimizer.load_state_dict(checkpoint["optimizer"])
+    if scheduler: scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler: scaler.load_state_dict(checkpoint["scaler"])
+
 # ------------------------------------------------
+
+def generate_confusion_matrix(model, loader, device, idx_to_class, model_type, load_from=None):
+    if load_from:  # If load from is not None, load the model from a checkpoint in order to keep training from there
+        print(f"Loading model from {load_from}")
+        load_model(load_from, model)
+
+    model.eval()
+
+    all_preds = []
+    all_labels = []
+
+    # pre-allocate tensors on GPU to avoid repeated transfers
+    with torch.no_grad():
+        for imgs, labels in tqdm(loader):
+            # data passed to gpu every batch
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+
+            # forward pass
+            outputs = model(imgs)
+            _, preds = torch.max(outputs, dim=1)
+
+            all_labels.append(labels.cpu())
+            all_preds.append(preds.cpu())
+
+    y_true = torch.cat(all_labels).numpy()
+    y_pred = torch.cat(all_preds).numpy()
+    cm = confusion_matrix(y_true, y_pred)
+    cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+
+    class_names = [idx_to_class[i] for i in range(27)]
+
+    cm_df = pd.DataFrame(
+        cm_norm,
+        index=class_names,
+        columns=class_names
+    )
+
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(
+        cm_df,
+        cmap="Blues",
+        annot=False,  # set True if you want numbers (can get cluttered)
+        fmt=".2f"
+    )
+
+    plt.title(f"Confusion matrix for 3d conv model using {model_type}")
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.tight_layout()
+    plt.show()
+
+# -----------------------------------------------
 
 if __name__ == "__main__":
     # to be ran once for the whole project
@@ -821,3 +886,7 @@ if __name__ == "__main__":
     )
 
     print(f"Finished with \nTrain_losses: {train_losses} \nTest_accuracies: {test_accuracies}")
+
+    idx_to_class = {v: k for k, v in valid_3d_data.class_to_idx.items()}
+    generate_confusion_matrix(model, val_loader, device, idx_to_class, "unmodified frames",
+                              load_from="put checkpoint path here")

@@ -612,12 +612,12 @@ class Resnet3DConvModel(nn.Module):
 
 # ------------------------------------
 
-def load_model(checkpoint_path, model, optimizer, scheduler, scaler):
+def load_model(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None):
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint["model"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    scheduler.load_state_dict(checkpoint["scheduler"])
-    scaler.load_state_dict(checkpoint["scaler"])
+    if optimizer: optimizer.load_state_dict(checkpoint["optimizer"])
+    if scheduler: scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler: scaler.load_state_dict(checkpoint["scaler"])
 
 # ------------------------------------
 

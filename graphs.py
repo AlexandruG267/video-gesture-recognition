@@ -19,8 +19,9 @@ val_accs = {"baseline": {"mean":[9.43396282196045, 9.562453269958496, 13.2481231
 
 model_types = ["baseline", "conv"]
 
+
 def generate_accuracy_over_epochs_graph():
-    fig, axs = plt.subplots(2, 1, figsize=(8, 10))
+    fig, axs = plt.subplots(len(model_types), 1, figsize=(8, len(model_types) * 5))
     # fig.subplots_adjust(hspace=0.4)
 
     for i, model in enumerate(model_types):
@@ -40,18 +41,27 @@ def generate_accuracy_over_epochs_graph():
 
     plt.show()
 
+def generate_accuracy_over_epochs_simple_graph(model):
 
-def load_model(checkpoint_path, model):
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint["model"])
+    x = np.arange(1, epochs + 1)
+    print(model)
+    print(val_accs[model])
+    for diff_type, y in val_accs[model].items():
+        plt.plot(x, y, label=diff_type)
 
+    plt.grid(True, )
+    plt.legend()
 
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation set accuracy")
+    plt.title(f"Validation set accuracy over the epochs for the {model} model")
 
+    plt.show()
 
 
 if __name__ == "__main__":
     # Code for generating the accuract over epochs graph
 
-    generate_accuracy_over_epochs_graph()
-
+    # generate_accuracy_over_epochs_graph()
+    generate_accuracy_over_epochs_simple_graph("baseline")
 
