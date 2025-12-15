@@ -26,6 +26,10 @@ import random
 # optional (I just like the summary output; install if you want with either pip or conda the package "torchsummary")
 from torchsummary import summary
 
+# Imports for confusion matrix
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
 # ----------------------------
 
 # setting seed for reproducibility
@@ -738,12 +742,12 @@ class TinyVGG(nn.Module):
 
 # ----------------------------------
 
-def load_model(checkpoint_path, model, optimizer, scheduler, scaler):
+def load_model(checkpoint_path, model, optimizer=None, scheduler=None, scaler=None):
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint["model"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    scheduler.load_state_dict(checkpoint["scheduler"])
-    scaler.load_state_dict(checkpoint["scaler"])
+    if optimizer: optimizer.load_state_dict(checkpoint["optimizer"])
+    if scheduler: scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler: scaler.load_state_dict(checkpoint["scaler"])
 
 # ------------------------------------
 
@@ -846,6 +850,60 @@ def train_model(model, train_loader, test_loader, device, num_epochs=30, lr=0.00
 
     return train_losses, val_accuracies
 
+# -----------------------------------------------
+
+def generate_confusion_matrix(model, loader, device, idx_to_class, model_type, load_from=None):
+    if load_from: # If load from is not None, load the model from a checkpoint in order to keep training from there
+        print(f"Loading model from {load_from}")
+        load_model(load_from, model)
+
+    model.eval()
+
+    all_preds = []
+    all_labels = []
+
+    # pre-allocate tensors on GPU to avoid repeated transfers
+    with torch.no_grad():
+        for imgs, labels in tqdm(loader):
+            # data passed to gpu every batch
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+
+            # forward pass
+            outputs = model(imgs)
+            _, preds = torch.max(outputs, dim=1)
+
+            all_labels.append(labels.cpu())
+            all_preds.append(preds.cpu())
+
+    y_true = torch.cat(all_labels).numpy()
+    y_pred = torch.cat(all_preds).numpy()
+    cm = confusion_matrix(y_true, y_pred)
+    cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+
+    class_names = [idx_to_class[i] for i in range(27)]
+
+    cm_df = pd.DataFrame(
+        cm_norm,
+        index=class_names,
+        columns=class_names
+    )
+
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(
+        cm_df,
+        cmap="Blues",
+        annot=False,  # set True if you want numbers (can get cluttered)
+        fmt=".2f"
+    )
+
+    plt.title(f"Confusion matrix for baseline using {model_type}")
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.tight_layout()
+    plt.show()
+
+
 # ------------------------------------------------
 
 if __name__ == "__main__":
@@ -875,26 +933,26 @@ if __name__ == "__main__":
         transforms.ToTensor()
     ])
 
-    # baseline_data_train = JesterMeanBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=train_annotation,
-    #     transform=transform,
-    #     trim_percent=trim_percent,
-    #     cache_dir=mean_cache_root
-    # )
-    #
-    # # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    # label_map = baseline_data_train.class_to_idx
-    #
-    # baseline_data_valid = JesterMeanBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=val_annotation,
-    #     transform=transform,
-    #     text_label_dict=label_map,
-    #     # so the Validation loader does not generate new ones and turn everything on its head
-    #     trim_percent=trim_percent,
-    #     cache_dir=mean_cache_root
-    # )
+    baseline_data_train = JesterMeanBaselineDataset(
+        data_root=video_root,
+        annotation_file=train_annotation,
+        transform=transform,
+        trim_percent=trim_percent,
+        cache_dir=mean_cache_root
+    )
+
+    # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
+    label_map = baseline_data_train.class_to_idx
+
+    baseline_data_valid = JesterMeanBaselineDataset(
+        data_root=video_root,
+        annotation_file=val_annotation,
+        transform=transform,
+        text_label_dict=label_map,
+        # so the Validation loader does not generate new ones and turn everything on its head
+        trim_percent=trim_percent,
+        cache_dir=mean_cache_root
+    )
 
 
     # baseline_data_train = JesterDiffBaselineDataset(
@@ -918,28 +976,28 @@ if __name__ == "__main__":
     #     cache_dir=diff_cache_root
     # )
 
-    baseline_data_train = JesterRelDiffBaselineDataset(
-        data_root=video_root,
-        annotation_file=train_annotation,
-        transform=transform,
-        trim_percent=trim_percent,
-        cache_dir=rel_diff_cache_root
-    )
+    # baseline_data_train = JesterRelDiffBaselineDataset(
+    #     data_root=video_root,
+    #     annotation_file=train_annotation,
+    #     transform=transform,
+    #     trim_percent=trim_percent,
+    #     cache_dir=rel_diff_cache_root
+    # )
+    #
+    # # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
+    # label_map = baseline_data_train.class_to_idx
+    #
+    # baseline_data_valid = JesterRelDiffBaselineDataset(
+    #     data_root=video_root,
+    #     annotation_file=val_annotation,
+    #     transform=transform,
+    #     text_label_dict=label_map,
+    #     # so the Validation loader does not generate new ones and turn everything on its head
+    #     trim_percent=trim_percent,
+    #     cache_dir=rel_diff_cache_root
+    # )
 
-    # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    label_map = baseline_data_train.class_to_idx
-
-    baseline_data_valid = JesterRelDiffBaselineDataset(
-        data_root=video_root,
-        annotation_file=val_annotation,
-        transform=transform,
-        text_label_dict=label_map,
-        # so the Validation loader does not generate new ones and turn everything on its head
-        trim_percent=trim_percent,
-        cache_dir=rel_diff_cache_root
-    )
-
-    show_random_baseline_image(baseline_data_valid)
+    # show_random_baseline_image(baseline_data_valid)
 
     # if train_annotation, then val_annotation works too. This has to return SUCCESS, otherwise the class cannot access the data locations
     check_data_availability(train_annotation, video_root)
@@ -990,15 +1048,19 @@ if __name__ == "__main__":
         pin_memory=False
     )
 
-    train_losses, val_accuracies = train_model(
-        model=model,
-        train_loader=train_loader,
-        test_loader=val_loader,
-        device=device,
-        num_epochs=epochs,
-        lr=lr,
-        checkpoint_interval=checkpoint_interval,
-        load_from=load_from
-    )
+    # train_losses, val_accuracies = train_model(
+    #     model=model,
+    #     train_loader=train_loader,
+    #     test_loader=val_loader,
+    #     device=device,
+    #     num_epochs=epochs,
+    #     lr=lr,
+    #     checkpoint_interval=checkpoint_interval,
+    #     load_from=load_from
+    # )
+    #
+    # print(f"Finished with \nTrain_losses: {train_losses} \nVal_accuracies: {val_accuracies}")
 
-    print(f"Finished with \nTrain_losses: {train_losses} \nVal_accuracies: {val_accuracies}")
+    idx_to_class = {v: k for k, v in baseline_data_valid.class_to_idx.items()}
+    generate_confusion_matrix(model, val_loader, device, idx_to_class,"simple_mean",
+                              load_from="checkpoints/baseline/checkpoint_JesterMeanBaselineDataset_30_44.85696792602539")
