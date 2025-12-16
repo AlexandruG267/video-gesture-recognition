@@ -384,11 +384,7 @@ class JesterDiffBaselineDataset(Dataset):
             # This captures the step-by-step motion
             raw_diff = img - first_img
 
-            # SIGNED NORMALIZATION: (Diff / 2) + 0.5
-            # Black (0.0) = Negative change (Object left / receded)
-            # Grey  (0.5) = No change (Background)
-            # White (1.0) = Positive change (Object arrived / advanced)
-            diff_tensor = (raw_diff / 2.0) + 0.5
+            diff_tensor = abs(raw_diff)
 
             tensors.append(diff_tensor)
 
@@ -869,10 +865,10 @@ def train_model(model, train_loader, test_loader, device, num_epochs=30, lr=0.00
 # -----------------------------------------------
 
 def generate_confusion_matrix(model, loader, device, idx_to_class, model_type, load_from=None):
-    if load_from: # If load from is not None, load the model from a checkpoint in order to keep training from there
-        print(f"Loading model from {load_from}")
+    if load_from:
         load_model(load_from, model)
 
+    model.to(device)
     model.eval()
 
     all_preds = []
@@ -894,10 +890,11 @@ def generate_confusion_matrix(model, loader, device, idx_to_class, model_type, l
 
     y_true = torch.cat(all_labels).numpy()
     y_pred = torch.cat(all_preds).numpy()
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred)  # from scikit-learn
     cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
 
-    class_names = [idx_to_class[i] for i in range(27)]
+    num_classes = len(idx_to_class)
+    class_names = [idx_to_class[i] for i in range(num_classes)]
 
     cm_df = pd.DataFrame(
         cm_norm,
@@ -910,14 +907,27 @@ def generate_confusion_matrix(model, loader, device, idx_to_class, model_type, l
         cm_df,
         cmap="Blues",
         annot=False,  # set True if you want numbers (can get cluttered)
-        fmt=".2f"
+        fmt=".2f",
+        xticklabels=class_names,
+        yticklabels=class_names
     )
 
-    plt.title(f"Confusion matrix for baseline using {model_type}")
-    plt.xlabel("Predicted label")
-    plt.ylabel("True label")
+    plt.title(f"Confusion matrix for baseline model using {model_type}", fontsize=18, pad=20)
+    plt.xlabel("Predicted label", fontsize=14)
+    plt.ylabel("True label", fontsize=14)
+
+    # Rotated x-ticks and increased tick label size
+    plt.xticks(rotation=45, ha='right', fontsize=10)
+    plt.yticks(fontsize=10)
+
     plt.tight_layout()
+
+    filename = f"confusion_matrix_{model_type.replace(' ', '_').lower()}.png"
+    plt.savefig(filename)
+    print(f"Confusion matrix saved to {filename}")
+
     plt.show()
+    plt.close()
 
 
 # ------------------------------------------------
@@ -949,69 +959,77 @@ if __name__ == "__main__":
         transforms.ToTensor()
     ])
 
-    # baseline_data_train = JesterMeanBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=train_annotation,
-    #     transform=transform,
-    #     trim_percent=trim_percent,
-    #     cache_dir=mean_cache_root
-    # )
-    #
-    # # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    # label_map = baseline_data_train.class_to_idx
-    #
-    # baseline_data_valid = JesterMeanBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=val_annotation,
-    #     transform=transform,
-    #     text_label_dict=label_map,
-    #     # so the Validation loader does not generate new ones and turn everything on its head
-    #     trim_percent=trim_percent,
-    #     cache_dir=mean_cache_root
-    # )
+    # Choose the method to use between the 3 options
+    method = "mean"
+    # method = "abs_diff"
+    # method = "rel_diff"
 
+    print(f"Using method {method}")
 
-    baseline_data_train = JesterDiffBaselineDataset(
-        data_root=video_root,
-        annotation_file=train_annotation,
-        transform=transform,
-        trim_percent=trim_percent,
-        cache_dir=diff_cache_root
-    )
+    match method:
+        case "mean":
+            baseline_data_train = JesterMeanBaselineDataset(
+                data_root=video_root,
+                annotation_file=train_annotation,
+                transform=transform,
+                trim_percent=trim_percent,
+                cache_dir=mean_cache_root
+            )
 
-    # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    label_map = baseline_data_train.class_to_idx
+            # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
+            label_map = baseline_data_train.class_to_idx
 
-    baseline_data_valid = JesterDiffBaselineDataset(
-        data_root=video_root,
-        annotation_file=val_annotation,
-        transform=transform,
-        text_label_dict=label_map,
-        # so the Validation loader does not generate new ones and turn everything on its head
-        trim_percent=trim_percent,
-        cache_dir=diff_cache_root
-    )
+            baseline_data_valid = JesterMeanBaselineDataset(
+                data_root=video_root,
+                annotation_file=val_annotation,
+                transform=transform,
+                text_label_dict=label_map,
+                # so the Validation loader does not generate new ones and turn everything on its head
+                trim_percent=trim_percent,
+                cache_dir=mean_cache_root
+            )
+        case "abs_diff":
+            baseline_data_train = JesterDiffBaselineDataset(
+                data_root=video_root,
+                annotation_file=train_annotation,
+                transform=transform,
+                trim_percent=trim_percent,
+                cache_dir=diff_cache_root
+            )
 
-    # baseline_data_train = JesterRelDiffBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=train_annotation,
-    #     transform=transform,
-    #     trim_percent=trim_percent,
-    #     cache_dir=rel_diff_cache_root
-    # )
-    #
-    # # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
-    # label_map = baseline_data_train.class_to_idx
-    #
-    # baseline_data_valid = JesterRelDiffBaselineDataset(
-    #     data_root=video_root,
-    #     annotation_file=val_annotation,
-    #     transform=transform,
-    #     text_label_dict=label_map,
-    #     # so the Validation loader does not generate new ones and turn everything on its head
-    #     trim_percent=trim_percent,
-    #     cache_dir=rel_diff_cache_root
-    # )
+            # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
+            label_map = baseline_data_train.class_to_idx
+
+            baseline_data_valid = JesterDiffBaselineDataset(
+                data_root=video_root,
+                annotation_file=val_annotation,
+                transform=transform,
+                text_label_dict=label_map,
+                # so the Validation loader does not generate new ones and turn everything on its head
+                trim_percent=trim_percent,
+                cache_dir=diff_cache_root
+            )
+        case "rel_diff":
+            baseline_data_train = JesterRelDiffBaselineDataset(
+                data_root=video_root,
+                annotation_file=train_annotation,
+                transform=transform,
+                trim_percent=trim_percent,
+                cache_dir=rel_diff_cache_root
+            )
+
+            # label map learned (generated) from the train videos: e.g. "Stop sign" is 1, and so on
+            label_map = baseline_data_train.class_to_idx
+
+            baseline_data_valid = JesterRelDiffBaselineDataset(
+                data_root=video_root,
+                annotation_file=val_annotation,
+                transform=transform,
+                text_label_dict=label_map,
+                # so the Validation loader does not generate new ones and turn everything on its head
+                trim_percent=trim_percent,
+                cache_dir=rel_diff_cache_root
+            )
 
     # show_random_baseline_image(baseline_data_valid)
 
@@ -1036,7 +1054,7 @@ if __name__ == "__main__":
     if device == "cpu":
         num_workers = min(12, os.cpu_count() or 2)  # dynamic core loading; swap the hard limit (12) depending on the amount of ram available (<16)
     else:
-        num_workers = 8
+        num_workers = 12
     # some computers can handle 12 core usage, but (with the assumption that we're calculating for video processing) we might run into OOM
     # "Out of Memory" errors on the RAM side, not the VRAM side. Note that this is foe Data Loading only! inspect machine_limit.py file for more info
     epochs = 30
@@ -1079,9 +1097,16 @@ if __name__ == "__main__":
 
     idx_to_class = {v: k for k, v in baseline_data_valid.class_to_idx.items()}
 
-    # generate_confusion_matrix(model, val_loader, device, idx_to_class, "simple mean",
-    #                           load_from="checkpoints/baseline/checkpoint_JesterDiffBaselineDataset_30_56.745792388916016")
-
-    generate_confusion_matrix(model, val_loader, device, idx_to_class, "absolute difference")
-    #
-    # generate_confusion_matrix(model, val_loader, device, idx_to_class,"relative difference")
+    match method:
+        case "mean":
+            generate_confusion_matrix(model, val_loader, device, idx_to_class, "simple mean",
+                                      # load_from="checkpoints/baseline/checkpoint_JesterMeanBaselineDataset_30_44.85696792602539"
+                                      )
+        case "abs_diff":
+            generate_confusion_matrix(model, val_loader, device, idx_to_class, "absolute difference",
+                                      # load_from="checkpoints/baseline/archive/checkpoint_JesterDiffBaselineDataset_30_56.745792388916016"
+                                      )
+        case "rel_diff":
+            generate_confusion_matrix(model, val_loader, device, idx_to_class,"relative difference",
+                                      # load_from="checkpoints/baseline/checkpoint_JesterRelDiffBaselineDataset_30_60.3367805480957"
+                                     )
