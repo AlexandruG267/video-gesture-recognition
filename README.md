@@ -18,6 +18,12 @@ For the 2D baseline, we collapsed the temporal dimension into a single image. Fo
 - Optimization: We used Momentum Gradient Descent with a CrossEntropy loss function and a CosineAnnealing scheduler. Best model states were saved based on validation accuracy.
 - Efficiency: To reduce training time, we implemented a caching system for every generated image and stack. This reduced training time by approximately *50-66%*.
 
+# Repository Structure 
+To navigate the code, please use these key files:
+- `full_baseline_pipeline_as_py.py` for generating the 2D data and training the 3 baseline models.
+- `3dconv_pipeline` for generating the 3D blocks and training the 3 3D models.
+The project was made with a mixed Linux/Windows workspace, so it uses our profiles for determining the proper local file structure to use. Having the raw Jester dataset, or the subset we used, downloaded is paramount for replication. The rest of the files are simply for exploratory data analysis early in the project, or previous versions of main files with changed names.
+
 # Results
 The benchmarking results highlight a significant performance gap depending on the preprocessing strategy used.
 
